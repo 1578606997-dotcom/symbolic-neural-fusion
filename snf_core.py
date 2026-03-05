@@ -7,7 +7,7 @@ Symbolic-Neural Fusion (SNF) - Core Implementation
 
 import json
 import re
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -33,27 +33,63 @@ class HILCompressor:
     """HIL 压缩引擎 - 将自然语言压缩为符号"""
     
     def __init__(self):
-        # 动作映射
-        self.action_map = {
-            r"\b(分析|查看|检查|总结|评估)\b": "?",
-            r"\b(创建|生成|写|制作|构建)\b": "!",
-            r"\b(转换|变成|改为|翻译)\b": ">",
-            r"\b(查询|搜索|查找|获取)\b": "@"
+        # 轻量级加权分类器（预编译正则，兼顾准确率与速度）
+        self.action_features = {
+            "?": [
+                (re.compile(p, re.IGNORECASE), w)
+                for p, w in [
+                    (r"分析|查看|检查|总结|评估|解释|说明|审查|review|analy[sz]e|summari[sz]e", 2.0),
+                    (r"为什么|原因|解读|诊断", 1.0)
+                ]
+            ],
+            "!": [
+                (re.compile(p, re.IGNORECASE), w)
+                for p, w in [
+                    (r"创建|生成|写|制作|构建|起草|产出|输出|做一份|撰写|create|generate|draft|build", 2.0),
+                    (r"报告|邮件|方案|计划|总结", 1.0)
+                ]
+            ],
+            ">": [
+                (re.compile(p, re.IGNORECASE), w)
+                for p, w in [
+                    (r"转换|变成|改为|翻译|改写|重写|转为|转成|convert|translate|rewrite|transform", 2.0),
+                    (r"格式|语言|风格", 1.0)
+                ]
+            ],
+            "@": [
+                (re.compile(p, re.IGNORECASE), w)
+                for p, w in [
+                    (r"查询|搜索|查找|获取|检索|找出|定位|query|search|find|lookup|fetch", 2.0),
+                    (r"数据库|记录|日志|资料", 1.0)
+                ]
+            ]
         }
-        
-        # 对象映射
-        self.object_map = {
-            r"\b(文档|文件|报告|文本)\b": "$",
-            r"\b(知识|数据|信息|资料)\b": "@"
+
+        self.object_features = {
+            "$": [
+                (re.compile(p, re.IGNORECASE), w)
+                for p, w in [
+                    (r"文档|文件|报告|文本|文章|邮件|合同|代码|脚本|计划书|pdf|doc", 2.0),
+                    (r"这份|该文|内容", 0.5)
+                ]
+            ],
+            "@": [
+                (re.compile(p, re.IGNORECASE), w)
+                for p, w in [
+                    (r"知识|数据|信息|资料|指标|日志|统计|记录|数据库|dataset|data", 2.0),
+                    (r"趋势|反馈|明细", 0.5)
+                ]
+            ]
         }
-        
-        # 修饰符映射
-        self.modifier_map = {
-            r"\b(中文|汉语|简体)\b": "z",
-            r"\b(英文|英语|English)\b": "e",
-            r"\b(bullet|要点|列表|点)\b": "b",
-            r"\b(json|JSON|格式)\b": "s"
-        }
+
+        self.modifier_map = [
+            (re.compile(r"中文|汉语|简体", re.IGNORECASE), "z"),
+            (re.compile(r"英文|英语|english", re.IGNORECASE), "e"),
+            (re.compile(r"bullet|要点|列表|条目|分点", re.IGNORECASE), "b"),
+            (re.compile(r"json|yaml|xml|结构化|格式", re.IGNORECASE), "s")
+        ]
+
+        self.limit_pattern = re.compile(r"(\d+)[个条点项份段]?", re.IGNORECASE)
     
     def compress(self, text: str) -> SymbolicMemory:
         """
@@ -87,25 +123,14 @@ class HILCompressor:
             "constraints": {}
         }
         
-        # 识别动作
-        for pattern, symbol in self.action_map.items():
-            if re.search(pattern, text, re.IGNORECASE):
-                intent["action"] = symbol
-                break
-        
-        # 识别对象
-        for pattern, symbol in self.object_map.items():
-            if re.search(pattern, text):
-                intent["object"] = symbol
-                break
-        
-        # 识别修饰符
-        for pattern, code in self.modifier_map.items():
-            if re.search(pattern, text, re.IGNORECASE):
+        intent["action"] = self._predict_label(text, self.action_features, default="?")
+        intent["object"] = self._predict_label(text, self.object_features, default="$")
+
+        for pattern, code in self.modifier_map:
+            if pattern.search(text):
                 intent["modifiers"].append(code)
-        
-        # 识别数量限制
-        num_match = re.search(r'(\d+)[个条点项]', text)
+
+        num_match = self.limit_pattern.search(text)
         if num_match:
             intent["constraints"]["limit"] = int(num_match.group(1))
         
@@ -124,6 +149,23 @@ class HILCompressor:
             parts.append(f"({intent['constraints']['limit']})")
         
         return " ".join(parts)
+
+    @staticmethod
+    def _predict_label(text: str, feature_map: Dict[str, list], default: str) -> str:
+        """基于加权关键特征的轻量分类器。"""
+        best_label = default
+        best_score = float("-inf")
+
+        for label, features in feature_map.items():
+            score = 0.0
+            for pattern, weight in features:
+                if pattern.search(text):
+                    score += weight
+            if score > best_score:
+                best_label = label
+                best_score = score
+
+        return best_label if best_score > 0 else default
 
 
 class SymbolicMemoryMatrix:
