@@ -90,6 +90,19 @@ class HILCompressor:
         ]
 
         self.limit_pattern = re.compile(r"(\d+)[个条点项份段]?", re.IGNORECASE)
+        self.comparison_trigger = re.compile(r"对比|比较|vs", re.IGNORECASE)
+        self.entity_split_pattern = re.compile(r"和|与|及", re.IGNORECASE)
+
+        self.comparison_dimension_map = {
+            "价格": "price",
+            "价钱": "price",
+            "成本": "price",
+            "质量": "quality",
+            "品质": "quality",
+            "性能": "performance",
+            "功能": "feature",
+            "服务": "service"
+        }
     
     def compress(self, text: str) -> SymbolicMemory:
         """
@@ -116,11 +129,13 @@ class HILCompressor:
     
     def _extract_intent(self, text: str) -> Dict:
         """提取意图结构"""
+        comparison = self._extract_comparison(text)
         intent = {
             "action": "?",  # 默认分析
             "object": "$",  # 默认文档
             "modifiers": [],
-            "constraints": {}
+            "constraints": {},
+            "comparison": comparison
         }
         
         intent["action"] = self._predict_label(text, self.action_features, default="?")
@@ -139,6 +154,12 @@ class HILCompressor:
     def _build_hil(self, intent: Dict) -> str:
         """构建 HIL 符号"""
         parts = [intent["action"], ":", intent["object"]]
+
+        comparison = intent.get("comparison")
+        if comparison:
+            entities = ",".join(comparison["entities"])
+            dimensions = ",".join(comparison["dimensions"])
+            return f"@vs({entities}){{{dimensions}}}"
         
         # 添加修饰符
         if intent["modifiers"]:
@@ -166,6 +187,45 @@ class HILCompressor:
                 best_score = score
 
         return best_label if best_score > 0 else default
+
+    def _extract_comparison(self, text: str):
+        """提取对比语法，生成 @vs(A,B){dimensions} 结构。"""
+        if not self.comparison_trigger.search(text):
+            return None
+
+        entities = self._extract_entities_for_comparison(text)
+        dimensions = self._extract_dimensions_for_comparison(text)
+
+        if len(entities) < 2 or not dimensions:
+            return None
+
+        return {
+            "entities": entities[:2],
+            "dimensions": dimensions
+        }
+
+    def _extract_entities_for_comparison(self, text: str) -> List[str]:
+        product_entities = re.findall(r"产品\s*([A-Za-z0-9]+)(?=和|与|及|的|$)", text, re.IGNORECASE)
+        if len(product_entities) >= 2:
+            return [f"product{entity}" for entity in product_entities[:2]]
+
+        if "对比" in text:
+            base = text.split("对比", 1)[1]
+        elif "比较" in text:
+            base = text.split("比较", 1)[1]
+        else:
+            base = text
+
+        base = re.split(r"的", base, maxsplit=1)[0]
+        candidates = [c.strip() for c in self.entity_split_pattern.split(base) if c.strip()]
+        return candidates[:2]
+
+    def _extract_dimensions_for_comparison(self, text: str) -> List[str]:
+        dimensions = []
+        for zh_key, dim in self.comparison_dimension_map.items():
+            if zh_key in text and dim not in dimensions:
+                dimensions.append(dim)
+        return dimensions
 
 
 class SymbolicMemoryMatrix:
